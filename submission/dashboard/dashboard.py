@@ -6,7 +6,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import streamlit as st
 
+# ==============================================================================
 # KONFIGURASI HALAMAN & GAYA VISUAL (CLEAN ANALYTICAL UI)
+# ==============================================================================
 st.set_page_config(
     page_title="Sistem Analitik Kualitas Udara Beijing (2013–2017)",
     layout="wide",
@@ -66,7 +68,9 @@ plt.rcParams['font.sans-serif'] = 'DejaVu Sans'
 plt.rcParams['axes.edgecolor'] = '#CBD5E1'
 plt.rcParams['axes.linewidth'] = 0.8
 
+# ==============================================================================
 # KONSTANTA DOMAIN & METADATA STASIUN
+# ==============================================================================
 STATION_METADATA = {
     'Aotizhongxin': (39.982, 116.397, 'Urban'),
     'Dongsi': (39.929, 116.417, 'Urban'),
@@ -105,22 +109,44 @@ COMPASS_ORDER = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', '
 MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des']
 
 
-# PIPELINE PEMUATAN & PEMROSESAN DATA OTOMATIS
+# ==============================================================================
+# PIPELINE PEMUATAN & PEMROSESAN DATA OTOMATIS (SUPPORT SUB-FOLDER CLOUD & LOKAL)
+# ==============================================================================
 @st.cache_data(show_spinner="Memuat dan memvalidasi struktur dataset kualitas udara...")
 def load_and_prepare_data():
-    main_csv_paths = ["dashboard/main_data.csv", "main_data.csv"]
-    hourly_csv_paths = ["dashboard/hourly_profile.csv", "hourly_profile.csv"]
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    parent_dir = os.path.dirname(base_dir)
+
+    main_csv_paths = [
+        os.path.join(base_dir, "main_data.csv"),
+        "submission/dashboard/main_data.csv",
+        "dashboard/main_data.csv",
+        "main_data.csv"
+    ]
+    hourly_csv_paths = [
+        os.path.join(base_dir, "hourly_profile.csv"),
+        "submission/dashboard/hourly_profile.csv",
+        "dashboard/hourly_profile.csv",
+        "hourly_profile.csv"
+    ]
 
     existing_main = next((p for p in main_csv_paths if os.path.exists(p)), None)
     existing_hourly = next((p for p in hourly_csv_paths if os.path.exists(p)), None)
 
-    raw_files = sorted(glob.glob("data/PRSA_Data_*.csv"))
-    if not raw_files:
-        raw_files = sorted(glob.glob("../data/PRSA_Data_*.csv"))
-    if not raw_files:
-        raw_files = sorted(glob.glob("PRSA_Data_*.csv"))
+    raw_patterns = [
+        os.path.join(parent_dir, "data", "PRSA_Data_*.csv"),
+        "submission/data/PRSA_Data_*.csv",
+        "data/PRSA_Data_*.csv",
+        "../data/PRSA_Data_*.csv",
+        "PRSA_Data_*.csv"
+    ]
+    raw_files = []
+    for pattern in raw_patterns:
+        found = sorted(glob.glob(pattern))
+        if found:
+            raw_files = found
+            break
 
-    # Jika file mentah tersedia dan main_data belum memiliki kolom lengkap ('wd', 'PM2.5_max'), bangun otomatis
     need_rebuild = True
     if existing_main is not None:
         sample_cols = pd.read_csv(existing_main, nrows=2).columns.tolist()
@@ -144,7 +170,6 @@ def load_and_prepare_data():
         ).reset_index().rename(columns={'index': 'station'})
         df_raw = df_raw.merge(coord_df, on='station', how='left')
 
-        # Simpan agregasi harian yang diperkaya
         daily_df = df_raw.groupby(
             [df_raw['datetime'].dt.date.rename('date'), 'year', 'month', 'station', 'zone', 'lat', 'lon']
         ).agg(
@@ -170,14 +195,15 @@ def load_and_prepare_data():
 
         daily_df['AQI_Category'] = pd.cut(daily_df['PM2.5'], bins=AQI_BINS, labels=AQI_LABELS, right=True)
 
-        # Simpan profil jam harian per stasiun & musim
         hourly_df = df_raw.groupby(['station', 'zone', 'hour'])[
             ['PM2.5', 'PM10', 'SO2', 'NO2', 'CO', 'O3', 'TEMP', 'WSPM']
         ].mean().reset_index()
 
-        out_dir = "dashboard" if os.path.isdir("dashboard") else "."
-        daily_df.to_csv(os.path.join(out_dir, "main_data.csv"), index=False)
-        hourly_df.to_csv(os.path.join(out_dir, "hourly_profile.csv"), index=False)
+        try:
+            daily_df.to_csv(os.path.join(base_dir, "main_data.csv"), index=False)
+            hourly_df.to_csv(os.path.join(base_dir, "hourly_profile.csv"), index=False)
+        except OSError:
+            pass
 
         daily_df['date'] = pd.to_datetime(daily_df['date'])
         return daily_df, hourly_df
@@ -198,14 +224,16 @@ def load_and_prepare_data():
 
     else:
         st.error(
-            "Berkas data tidak ditemukan. Pastikan 'dashboard/main_data.csv' atau berkas CSV di folder 'data/' tersedia."
+            f"Berkas data tidak ditemukan di {base_dir}. Pastikan 'main_data.csv' atau folder 'data/' tersedia."
         )
         st.stop()
 
 
 df, hourly_df = load_and_prepare_data()
 
+# ==============================================================================
 # PANEL KONTROL SAMPING (SIDEBAR PARAMETER & FILTER)
+# ==============================================================================
 with st.sidebar:
     st.markdown("### Parameter Analitik")
     selected_pollutant = st.selectbox(
@@ -280,7 +308,9 @@ spec = POLLUTANT_SPECS[selected_pollutant]
 threshold_val = spec['threshold']
 unit_str = spec['unit']
 
+# ==============================================================================
 # HEADER EKSEKUTIF & BARIS INDIKATOR KINERJA UTAMA (6 KPI CARDS)
+# ==============================================================================
 st.title("Sistem Analitik Kualitas Udara & Meteorologi Beijing")
 st.markdown(
     f"**Parameter Aktif:** `{spec['label']}` | **Periode:** `{start_dt.strftime('%d %b %Y')}` – `{end_dt.strftime('%d %b %Y')}` | "
@@ -345,7 +375,9 @@ with kpi6:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
+# ==============================================================================
 # ARSITEKTUR 5 TAB ANALITIK
+# ==============================================================================
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "1. Komparasi Spasial & Anomali Stasiun",
     "2. Dekomposisi Deret Waktu & Musiman",
@@ -355,7 +387,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 # ------------------------------------------------------------------------------
-# TAB 1: KOMPARASI SPASIAL & ANOMALI STASIUN (MENJAWAB PERTANYAAN BISNIS 1)
+# TAB 1: KOMPARASI SPASIAL & ANOMALI STASIUN
 # ------------------------------------------------------------------------------
 with tab1:
     st.subheader(f"Distribusi Spasial & Deviasi Anomali {selected_pollutant} Antar Stasiun")
@@ -418,7 +450,6 @@ with tab1:
         plt.tight_layout()
         st.pyplot(fig_s2)
 
-    # Ringkasan Statistik Komparatif Antar Stasiun
     st.markdown("#### Matriks Distribusi Statistik Stasiun Pemantauan")
     stat_table = filtered_df.groupby(['station', 'zone'])[selected_pollutant].agg(
         Observasi_Hari='count',
@@ -436,7 +467,7 @@ with tab1:
     st.dataframe(stat_table, use_container_width=True, hide_index=True)
 
 # ------------------------------------------------------------------------------
-# TAB 2: DEKOMPOSISI DERET WAKTU & MUSIMAN (MENJAWAB PERTANYAAN BISNIS 2)
+# TAB 2: DEKOMPOSISI DERET WAKTU & MUSIMAN
 # ------------------------------------------------------------------------------
 with tab2:
     st.subheader(f"Dekomposisi Tren Moving Average ({ma_window} Hari) & Matriks Musiman")
@@ -445,7 +476,6 @@ with tab2:
         "matriks intensitas Tahun × Bulan, serta oposisi siklus antara partikulat (PM2.5) dan Ozon fotokimia (O3)."
     )
 
-    # Grafik Atas: Moving Average Time Series + Kuantil P25-P75 & Komparasi Urban vs Suburban
     fig_ts, ax_ts = plt.subplots(figsize=(15, 4.5))
 
     daily_city = filtered_df.groupby('date')[selected_pollutant].agg(
@@ -474,7 +504,6 @@ with tab2:
     plt.tight_layout()
     st.pyplot(fig_ts)
 
-    # Baris Tengah: Matriks Heatmap Tahun x Bulan & Siklus Musiman PM2.5 vs O3
     col_t2_left, col_t2_right = st.columns(2)
 
     with col_t2_left:
@@ -517,7 +546,6 @@ with tab2:
         plt.tight_layout()
         st.pyplot(fig_seas)
 
-    # Baris Bawah: Profil Diurnal (24 Jam) jika hourly_df tersedia
     if hourly_df is not None:
         st.markdown("#### Profil Siklus Jam Harian (Diurnal 24-Jam) & Dispersi Kecepatan Angin")
         hr_filt = hourly_df[hourly_df['station'].isin(selected_stations)].groupby('hour')[
@@ -610,7 +638,6 @@ with tab3:
         plt.tight_layout()
         st.pyplot(fig_cor)
 
-    # Baris Bawah Tab 3: Dampak Rezim Kecepatan Angin & Suhu Udara (Binned Regimes)
     st.markdown("#### Respons Konsentrasi Polutan terhadap Rezim Kecepatan Angin & Suhu Udara")
     col_reg1, col_reg2 = st.columns(2)
 
